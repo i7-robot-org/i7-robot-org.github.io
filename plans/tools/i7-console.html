@@ -795,9 +795,9 @@ function renderTop(force){
     return}
   $('#ctrlbar').innerHTML='';$('#fab').innerHTML='';
   h+=stats;
-  if(CTRL.includes(cur)&&bridgeOk()){
+  if(bridgeOk()){
     h+='<span class="tsep" aria-hidden="true"></span>';
-    if(level(cur==='deploy'?'ops':'live')==='full')h+=unlockBtn(left);
+    if(CTRL.includes(cur)&&level(cur==='deploy'?'ops':'live')==='full')h+=unlockBtn(left);
     h+=`<div class="stopw"><button type="button" class="stop" data-act="stop"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" fill="#fff"/></svg>快速停止</button><small>软件停止，不替代硬件急停</small></div>`;
   }
   $('#top').innerHTML=h;
