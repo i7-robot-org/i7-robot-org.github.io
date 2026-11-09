@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>i7 导航取水影片</title>
+<!-- Film page: renders one frame per window.render(t) call. video/render.mjs captures it into the MP4. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #f5f5f7; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+<div id="stage" class="i7sim"></div>
+<script type="module">
+import { createSim, OVERLAY_CSS, UI_TEXT } from './assets/i7sim.js';
+
+window.ready = false;
+const css = document.createElement('style'); css.textContent = OVERLAY_CSS; document.head.appendChild(css);
+const q = new URLSearchParams(location.search);
+const sim = await createSim(document.getElementById('stage'), { mode: 'film', meshUrl: './assets/i7_mesh.json', pixelRatio: 1 });
+// load every font subset the overlay will need, so no frame falls back to a system font
+await Promise.all([400, 500, 600, 700, 800].map(w => document.fonts.load(`${w} 24px "Noto Sans SC"`, UI_TEXT).catch(() => {})));
+await document.fonts.ready;
+const clean = q.has('clean');
+window.duration = sim.duration;
+const studio = q.get('studio');   // ?studio=<azimuth> renders the robot alone on white (&look=<z>&dist=<m> for a close-up)
+const shot = Object.fromEntries(['look', 'dist', 'fov'].filter(k => q.has(k)).map(k => [k, +q.get(k)]));
+// ?cam=x,y,z,tx,ty,tz[,fov] looks at the frame from a fixed camera instead of the guided shot (for checking)
+const camQ = q.get('cam') ? q.get('cam').split(',').map(Number) : null;
+const cam = camQ ? { pos: camQ.slice(0, 3), tgt: camQ.slice(3, 6), fov: camQ[6] } : null;
+window.render = studio !== null ? () => sim.renderStudio(+studio || -0.65, shot) : (t) => sim.render(t, { clean, cam });
+window.render(+(q.get('t') || 0));
+window.ready = true;
+</script>
+</body>
+</html>
