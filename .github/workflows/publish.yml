@@ -1,0 +1,148 @@
+# Builds the site from the private repo i7-robot-org/i7-robot and publishes it
+# on main of this public repository, which GitHub Pages serves at
+# https://i7-robot-org.github.io/ (Pages source: deploy from branch main, /).
+#
+# The build runs here, not in i7-robot, because Actions minutes of private
+# repositories are billed to the organization, while GitHub-hosted runners in
+# public repositories are free. Nothing in i7-robot can trigger this workflow,
+# so it polls i7-robot main on a schedule and skips the build when the commit
+# it would publish is already published.
+#
+# I7_ROBOT_READ_KEY is the private half of a READ-ONLY deploy key on
+# i7-robot-org/i7-robot. The workflow has no pull_request trigger, so forks
+# can never run it with that secret. Logs of this public repository are public:
+# do not add steps that print source files or the environment.
+#
+# Only the tree assembled by pages/assemble.py and checked by
+# pages/check_publish.py (both in i7-robot) is copied here; .github/ and
+# README.md of this repository are kept.
+name: Publish site
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "i7-robot branch, tag or full commit SHA to publish"
+        default: main
+      force:
+        description: "Rebuild even if that commit is already published"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REPO: i7-robot-org/i7-robot
+      REF: ${{ inputs.ref || 'main' }}
+      FORCE: ${{ inputs.force || false }}
+    steps:
+      - name: Check the read key is configured
+        env:
+          KEY: ${{ secrets.I7_ROBOT_READ_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::Secret I7_ROBOT_READ_KEY is not set (read-only deploy key of $SOURCE_REPO)."
+            exit 1
+          fi
+
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: site
+          fetch-depth: 20
+
+      - name: Resolve the source commit
+        id: src
+        env:
+          KEY: ${{ secrets.I7_ROBOT_READ_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+            sha="$REF"
+          else
+            eval "$(ssh-agent -s)" > /dev/null
+            ssh-add - <<< "$KEY" 2> /dev/null
+            # GitHub's published SSH host key, so the key is not trusted on first use.
+            mkdir -p ~/.ssh
+            echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" \
+              >> ~/.ssh/known_hosts
+            sha=$(git ls-remote "git@github.com:$SOURCE_REPO.git" "refs/heads/$REF" "refs/tags/$REF" \
+              | head -n1 | cut -f1)
+            ssh-agent -k > /dev/null
+          fi
+          if [ -z "$sha" ]; then
+            echo "::error::$SOURCE_REPO has no branch or tag named $REF"
+            exit 1
+          fi
+          last=$(git -C site log -1 --format=%s --grep='^Publish site ' \
+            | sed -n "s|.*$SOURCE_REPO@\([0-9a-f]\{40\}\).*|\1|p")
+          echo "source $sha, last published ${last:-none}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ "$sha" = "$last" ] && [ "$FORCE" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the site sources from i7-robot
+        if: steps.src.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ steps.src.outputs.sha }}
+          ssh-key: ${{ secrets.I7_ROBOT_READ_KEY }}
+          persist-credentials: false
+          path: src
+          sparse-checkout: |
+            docs/showcase
+            plans/site
+            pages
+
+      - name: Assemble and check the site
+        if: steps.src.outputs.skip != 'true'
+        run: |
+          python3 src/pages/assemble.py "$RUNNER_TEMP/_site"
+          python3 src/pages/check_publish.py "$RUNNER_TEMP/_site"
+
+      - name: Commit the site to main
+        if: steps.src.outputs.skip != 'true'
+        id: commit
+        env:
+          SHA: ${{ steps.src.outputs.sha }}
+        run: |
+          set -euo pipefail
+          cd site
+          # Replace everything except this repository's own files.
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name README.md \
+            -exec rm -rf {} +
+          cp -a "$RUNNER_TEMP/_site/." .
+          git add -A
+          if git diff --cached --quiet; then
+            # The new commit did not touch the site. Nothing to publish; later
+            # runs rebuild and land here again until the site changes.
+            echo "site unchanged at $SOURCE_REPO@$SHA"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Publish site $SOURCE_REPO@$SHA"
+          git push origin HEAD:main
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Request a Pages build
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A push made with GITHUB_TOKEN may not start the branch Pages build on
+        # its own; asking explicitly is harmless when it already started.
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" --silent || echo "::warning::Pages build request failed; the push may still trigger it"
